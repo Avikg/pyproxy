@@ -1,46 +1,25 @@
-# pyproxy.spec
-# Build with: pyinstaller pyproxy.spec
-
-import sys
-from pathlib import Path
-
+# pyproxy.spec – no GUI, tray only
 block_cipher = None
 
 a = Analysis(
     ['tray_app.py'],
-    pathex=[str(Path('.'))]  ,
+    pathex=['.'],
     binaries=[],
     datas=[
-        ('config.yaml', '.'),          # bundle default config
-        ('proxy/*.py', 'proxy'),       # all proxy modules
+        ('config.yaml', '.'),
+        ('proxy/*.py', 'proxy'),
     ],
     hiddenimports=[
-        'proxy',
-        'proxy.config',
-        'proxy.logger',
-        'proxy.filters',
-        'proxy.cache',
-        'proxy.bandwidth',
-        'proxy.http_parser',
-        'proxy.ftp_handler',
-        'proxy.handler',
-        'proxy.server',
-        'pystray',
-        'pystray._win32',
-        'PIL',
-        'PIL.Image',
-        'PIL.ImageDraw',
-        'PIL.ImageFont',
-        'yaml',
-        'ftplib',
-        'logging.handlers',
+        'proxy', 'proxy.config', 'proxy.logger', 'proxy.filters',
+        'proxy.cache', 'proxy.bandwidth', 'proxy.http_parser',
+        'proxy.ftp_handler', 'proxy.handler', 'proxy.server', 'proxy.stats',
+        'pystray', 'pystray._win32',
+        'PIL', 'PIL.Image', 'PIL.ImageDraw',
+        'yaml', 'ftplib', 'logging.handlers',
     ],
     hookspath=[],
-    hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'matplotlib', 'numpy', 'scipy'],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
+    excludes=['tkinter', 'matplotlib', 'numpy', 'scipy', 'PyQt5', 'wx'],
     cipher=block_cipher,
     noarchive=False,
 )
@@ -56,15 +35,10 @@ exe = EXE(
     [],
     name='PyProxy',
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,          # no terminal window – tray only
-    disable_windowed_traceback=False,
+    console=False,
     target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    # icon='icon.ico',      # uncomment and add icon.ico to use a custom icon
 )

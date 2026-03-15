@@ -1,9 +1,6 @@
 """
-tray_app.py – System tray entry point for PyProxy.
-
-Runs the proxy server in a background thread and exposes
-Start / Stop / Open Config / View Log / Quit via a taskbar icon.
-Works on Windows without a terminal window.
+tray_app.py – PyProxy system tray app (no GUI window).
+Right-click tray icon for controls.
 """
 from __future__ import annotations
 
@@ -14,7 +11,6 @@ import threading
 import time
 from pathlib import Path
 
-# ── Resolve base dir whether running as .exe or .py ──────────────────────────
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
 else:
@@ -23,7 +19,6 @@ else:
 CONFIG_PATH = BASE_DIR / "config.yaml"
 LOG_PATH    = BASE_DIR / "proxy.log"
 
-# ── Ensure config.yaml exists next to the exe ────────────────────────────────
 DEFAULT_CONFIG = """\
 server:
   host: "0.0.0.0"
@@ -58,187 +53,164 @@ domain_filter:
 if not CONFIG_PATH.exists():
     CONFIG_PATH.write_text(DEFAULT_CONFIG)
 
-# ── Patch sys.path so proxy package is found ─────────────────────────────────
 sys.path.insert(0, str(BASE_DIR))
 
-from proxy import ProxyServer, load_config  # noqa: E402
+from proxy import ProxyServer, load_config
+from proxy.stats import STATS
+import pystray
+from PIL import Image, ImageDraw
 
-import pystray                              # noqa: E402
-from PIL import Image, ImageDraw           # noqa: E402
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Tray icon image (drawn programmatically – no external asset needed)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _make_icon(active: bool) -> Image.Image:
     size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-
-    # Circle background
-    bg = (34, 197, 94) if active else (107, 114, 128)   # green : grey
-    draw.ellipse([4, 4, size - 4, size - 4], fill=bg)
-
-    # "P" letter
+    bg   = (34, 197, 94) if active else (107, 114, 128)
+    draw.ellipse([4, 4, size-4, size-4], fill=bg)
     draw.rectangle([20, 16, 26, 48], fill="white")
     draw.rectangle([20, 16, 36, 22], fill="white")
     draw.rectangle([20, 30, 36, 36], fill="white")
     draw.ellipse([26, 16, 40, 36], fill=bg)
     draw.ellipse([28, 18, 38, 34], fill="white")
     draw.rectangle([26, 24, 34, 30], fill=bg)
-
     return img
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Application state
-# ─────────────────────────────────────────────────────────────────────────────
+def _open_file(path: Path):
+    """Open a file in the default app (Notepad on Windows)."""
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception:
+        pass
+
 
 class App:
     def __init__(self):
-        self._server: ProxyServer | None = None
-        self._thread: threading.Thread | None = None
-        self._lock = threading.Lock()
-        self._icon: pystray.Icon | None = None
+        self._server = None
+        self._thread = None
+        self._lock   = threading.Lock()
+        self._icon   = None
 
-    # ── Server control ───────────────────────────────────────────────────────
-
-    def _load_server(self) -> ProxyServer:
-        cfg = load_config(str(CONFIG_PATH))
-        # Always write log next to the exe
-        cfg.logging.log_file = str(LOG_PATH)
-        return ProxyServer(cfg)
+    # ── Proxy ─────────────────────────────────────────────────────────────────
 
     def start_proxy(self):
         with self._lock:
             if self._server is not None:
                 return
-            self._server = self._load_server()
-
+            cfg = load_config(str(CONFIG_PATH))
+            cfg.logging.log_file = str(LOG_PATH)
+            self._server = ProxyServer(cfg)
+        STATS.reset()
         self._thread = threading.Thread(
-            target=self._server.start,
-            name="proxy-server",
-            daemon=True,
-        )
+            target=self._server.start, daemon=True, name="proxy")
         self._thread.start()
-        time.sleep(0.3)
-        self._refresh_menu()
+        time.sleep(0.4)
+        self._refresh()
 
     def stop_proxy(self):
         with self._lock:
             if self._server is None:
                 return
-            srv = self._server
-            self._server = None
-
+            srv, self._server = self._server, None
         srv.stop()
         if self._thread:
             self._thread.join(timeout=3)
             self._thread = None
-        self._refresh_menu()
+        self._refresh()
+
+    def restart_proxy(self):
+        self.stop_proxy()
+        time.sleep(0.3)
+        self.start_proxy()
 
     @property
-    def is_running(self) -> bool:
+    def running(self):
         return self._server is not None
 
-    # ── Menu actions ─────────────────────────────────────────────────────────
+    # ── Tray ──────────────────────────────────────────────────────────────────
 
-    def action_start(self, icon, item):
-        threading.Thread(target=self.start_proxy, daemon=True).start()
+    def _refresh(self):
+        if not self._icon:
+            return
+        self._icon.icon  = _make_icon(self.running)
+        self._icon.title = f"PyProxy – {'Running' if self.running else 'Stopped'}"
+        self._icon.menu  = self._menu()
 
-    def action_stop(self, icon, item):
-        threading.Thread(target=self.stop_proxy, daemon=True).start()
+    def _menu(self):
+        try:
+            port = load_config(str(CONFIG_PATH)).server.port
+        except Exception:
+            port = 8080
 
-    def action_open_config(self, icon, item):
-        if sys.platform == "win32":
-            os.startfile(str(CONFIG_PATH))
-        else:
-            subprocess.Popen(["xdg-open", str(CONFIG_PATH)])
-
-    def action_open_log(self, icon, item):
-        if not LOG_PATH.exists():
-            LOG_PATH.touch()
-        if sys.platform == "win32":
-            os.startfile(str(LOG_PATH))
-        else:
-            subprocess.Popen(["xdg-open", str(LOG_PATH)])
-
-    def action_restart(self, icon, item):
-        def _do():
-            self.stop_proxy()
-            time.sleep(0.5)
-            self.start_proxy()
-        threading.Thread(target=_do, daemon=True).start()
-
-    def action_quit(self, icon, item):
-        self.stop_proxy()
-        icon.stop()
-
-    # ── Menu builder ─────────────────────────────────────────────────────────
-
-    def _build_menu(self) -> pystray.Menu:
-        running = self.is_running
-        cfg = load_config(str(CONFIG_PATH))
-        port = cfg.server.port
-
-        status_text = f"● Running on port {port}" if running else "○ Stopped"
+        snap   = STATS.snapshot()
+        status = (f"● Running  127.0.0.1:{port}"
+                  if self.running else "○ Stopped")
+        info   = (f"Reqs: {snap['total_requests']}  "
+                  f"Blocked: {snap['blocked_requests']}  "
+                  f"Uptime: {snap['uptime_str']}")
 
         return pystray.Menu(
-            pystray.MenuItem(status_text, None, enabled=False),
+            pystray.MenuItem(status, None, enabled=False),
+            pystray.MenuItem(info,   None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(
-                "Start",
-                self.action_start,
-                enabled=not running,
-            ),
-            pystray.MenuItem(
-                "Stop",
-                self.action_stop,
-                enabled=running,
-            ),
-            pystray.MenuItem(
-                "Restart",
-                self.action_restart,
-                enabled=running,
-            ),
+            pystray.MenuItem("Start",   self._do_start,   enabled=not self.running),
+            pystray.MenuItem("Stop",    self._do_stop,    enabled=self.running),
+            pystray.MenuItem("Restart", self._do_restart, enabled=self.running),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Open config.yaml", self.action_open_config),
-            pystray.MenuItem("Open proxy.log",   self.action_open_log),
+            pystray.MenuItem("View Log",     self._do_open_log),
+            pystray.MenuItem("Open Config",  self._do_open_config),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit", self.action_quit),
+            pystray.MenuItem("Quit", self._do_quit),
         )
 
-    def _refresh_menu(self):
-        if self._icon:
-            self._icon.icon = _make_icon(self.is_running)
-            self._icon.menu = self._build_menu()
-            title = "PyProxy – Running" if self.is_running else "PyProxy – Stopped"
-            self._icon.title = title
+    # ── Menu actions ──────────────────────────────────────────────────────────
 
-    # ── Run ──────────────────────────────────────────────────────────────────
+    def _do_start(self, *_):
+        threading.Thread(target=self.start_proxy, daemon=True).start()
+
+    def _do_stop(self, *_):
+        threading.Thread(target=self.stop_proxy, daemon=True).start()
+
+    def _do_restart(self, *_):
+        threading.Thread(target=self.restart_proxy, daemon=True).start()
+
+    def _do_open_log(self, *_):
+        if not LOG_PATH.exists():
+            LOG_PATH.touch()
+        _open_file(LOG_PATH)
+
+    def _do_open_config(self, *_):
+        _open_file(CONFIG_PATH)
+
+    def _do_quit(self, *_):
+        self.stop_proxy()
+        self._icon.stop()
+
+    # ── Run ───────────────────────────────────────────────────────────────────
 
     def run(self):
-        # Auto-start proxy on launch
         threading.Thread(target=self.start_proxy, daemon=True).start()
 
         self._icon = pystray.Icon(
             name="PyProxy",
             icon=_make_icon(False),
             title="PyProxy – Starting…",
-            menu=self._build_menu(),
+            menu=self._menu(),
         )
 
-        # Refresh icon once proxy has started
-        def _delayed_refresh():
-            time.sleep(0.8)
-            self._refresh_menu()
+        # Refresh stats in tray every 5 seconds
+        def _ticker():
+            while True:
+                time.sleep(5)
+                if self._icon:
+                    self._refresh()
+        threading.Thread(target=_ticker, daemon=True).start()
 
-        threading.Thread(target=_delayed_refresh, daemon=True).start()
         self._icon.run()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     App().run()

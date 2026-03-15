@@ -683,3 +683,34 @@
 2026-03-15 22:37:01 [INFO] worker_32 – HTTP CONNECT dcg.microsoft.com:443/ [192.168.0.199]
 2026-03-15 22:37:01 [INFO] worker_32 – CONNECT tunnel dcg.microsoft.com:443 [192.168.0.199]
 2026-03-15 22:37:06 [DEBUG] worker_45 – Cache STORE: GET|c.pki.goog:80|/r/gsr1.crl
+2026-03-15 23:32:55 [INFO] proxy-server – ============================================================
+2026-03-15 23:32:55 [INFO] proxy-server – PyProxy started on 0.0.0.0:8080  (workers=50)
+2026-03-15 23:32:55 [INFO] proxy-server – Cache: True  |  Bandwidth control: True
+2026-03-15 23:32:55 [INFO] proxy-server – IP filter: none  |  Domain filter: none
+2026-03-15 23:32:55 [INFO] proxy-server – ============================================================
+2026-03-16 00:10:55 [INFO] proxy-server – ============================================================
+2026-03-16 00:10:55 [INFO] proxy-server – PyProxy started on 0.0.0.0:8080  (workers=50)
+2026-03-16 00:10:55 [INFO] proxy-server – Cache: True  |  Bandwidth control: True
+2026-03-16 00:10:55 [INFO] proxy-server – IP filter: none  |  Domain filter: none
+2026-03-16 00:10:55 [INFO] proxy-server – ============================================================
+2026-03-16 00:12:06 [INFO] proxy-server – Server stopped.
+2026-03-16 00:17:30 [INFO] MainThread – Signal 2 received – shutting down.
+2026-03-16 00:17:30 [INFO] MainThread – Server stopped.
+2026-03-16 00:20:21 [INFO] proxy-server – ============================================================
+2026-03-16 00:20:21 [INFO] proxy-server – PyProxy started on 0.0.0.0:8080  (workers=50)
+2026-03-16 00:20:21 [INFO] proxy-server – Cache: True  |  Bandwidth control: True
+2026-03-16 00:20:21 [INFO] proxy-server – IP filter: none  |  Domain filter: none
+2026-03-16 00:20:21 [INFO] proxy-server – ============================================================
+2026-03-16 00:21:29 [INFO] proxy-server – Server stopped.
+2026-03-16 00:28:59 [INFO] proxy-server – ============================================================
+2026-03-16 00:28:59 [INFO] proxy-server – PyProxy started on 0.0.0.0:8080  (workers=50)
+2026-03-16 00:28:59 [INFO] proxy-server – Cache: True  |  Bandwidth control: True
+2026-03-16 00:28:59 [INFO] proxy-server – IP filter: none  |  Domain filter: none
+2026-03-16 00:28:59 [INFO] proxy-server – ============================================================
+2026-03-16 00:31:16 [INFO] proxy-server – Server stopped.
+2026-03-16 00:36:26 [INFO] proxy – ============================================================
+2026-03-16 00:36:26 [INFO] proxy – PyProxy started on 0.0.0.0:8080  (workers=50)
+2026-03-16 00:36:26 [INFO] proxy – Cache: True  |  Bandwidth control: True
+2026-03-16 00:36:26 [INFO] proxy – IP filter: none  |  Domain filter: none
+2026-03-16 00:36:26 [INFO] proxy – ============================================================
+2026-03-16 00:37:36 [INFO] proxy – Server stopped.

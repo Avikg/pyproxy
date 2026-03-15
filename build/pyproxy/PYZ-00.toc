@@ -489,6 +489,7 @@
    'PYMODULE'),
   ('proxy.logger', 'C:\\Development\\pyproxy\\proxy\\logger.py', 'PYMODULE'),
   ('proxy.server', 'C:\\Development\\pyproxy\\proxy\\server.py', 'PYMODULE'),
+  ('proxy.stats', 'C:\\Development\\pyproxy\\proxy\\stats.py', 'PYMODULE'),
   ('py_compile', 'C:\\Python313\\Lib\\py_compile.py', 'PYMODULE'),
   ('pystray',
    'C:\\Development\\pyproxy\\.venv\\Lib\\site-packages\\pystray\\__init__.py',
