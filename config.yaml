@@ -1,0 +1,34 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  workers: 50               # max concurrent threads
+
+logging:
+  level: "INFO"             # DEBUG | INFO | WARNING | ERROR
+  log_file: "proxy.log"
+  max_bytes: 10485760       # 10 MB per log file
+  backup_count: 5
+
+cache:
+  enabled: true
+  max_size: 256             # number of cached responses
+  ttl: 300                  # seconds
+
+bandwidth:
+  enabled: true
+  default_kbps: 0           # 0 = unlimited
+  per_ip:                   # per-IP override in kbps
+    # "192.168.1.50": 512
+    # "192.168.1.51": 1024
+
+ip_filter:
+  mode: "none"              # none | allowlist | blocklist
+  list:
+    # - "192.168.1.100"
+    # - "10.0.0.0/24"
+
+domain_filter:
+  mode: "none"              # none | allowlist | blocklist
+  list:
+    # - "ads.example.com"
+    # - "*.tracker.net"
