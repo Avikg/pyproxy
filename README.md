@@ -1,83 +1,104 @@
 # PyProxy
 
 A CCProxy-style multi-protocol internet proxy server written in Python.
+Runs as a **system tray application** — no terminal, no VS Code needed.
 
 ## Features
 
 | Feature | Details |
 |---|---|
 | **Protocols** | HTTP, HTTPS (CONNECT tunnel), SOCKS5, FTP-over-HTTP |
-| **Logging** | Console + rotating log file |
-| **IP filter** | None / allowlist / blocklist (supports CIDR ranges) |
-| **Domain filter** | None / allowlist / blocklist (supports `*.wildcard` patterns) |
-| **Web cache** | In-memory LRU cache for HTTP GET responses, configurable TTL |
+| **System tray** | Start / Stop / Restart / Open config / View log |
+| **IP filter** | None / allowlist / blocklist (CIDR ranges supported) |
+| **Domain filter** | None / allowlist / blocklist (`*.wildcard` patterns) |
+| **Web cache** | In-memory LRU cache for HTTP GET responses |
 | **Bandwidth control** | Token-bucket throttler per client IP |
-| **Concurrency** | Thread-pool (configurable worker count) |
+| **Logging** | Console + rotating log file |
 
 ---
 
-## Quick Start
+## Building the Standalone .exe (Windows)
 
-```bash
-# 1. Create and activate a virtual environment
-python -m venv .venv
+Requirements: **Python 3.10+** installed and on PATH.
 
-# Windows
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Run the proxy
-python main.py
+```bat
+build.bat
 ```
 
-Default port: **8080**
+That's it. The script will:
+1. Create a `.venv`
+2. Install all dependencies
+3. Run PyInstaller
+4. Output `dist\PyProxy.exe`
 
-### Windows Proxy Settings
+### Distributing to other machines
 
-1. Open **Settings → Network & Internet → Proxy**
-2. Enable **"Use a proxy server"**
-3. Address: `127.0.0.1`  Port: `8080`
-4. Click **Save**
+Copy the `dist\` folder — it contains:
+```
+dist\
+├── PyProxy.exe       ← double-click to run
+└── config.yaml       ← edit to change settings
+```
+
+No Python installation required on the target machine.
 
 ---
 
-## Configuration (`config.yaml`)
+## Usage
+
+1. Double-click `PyProxy.exe`
+2. A **green circle icon** appears in the system tray (bottom-right taskbar)
+3. Right-click the icon for options:
+   - **Start / Stop / Restart** the proxy
+   - **Open config.yaml** — edit settings (restart to apply)
+   - **Open proxy.log** — view live logs
+
+---
+
+## Windows Proxy Setup
+
+After starting PyProxy, point Windows at it:
+
+1. **Settings → Network & Internet → Proxy**
+2. Enable **"Use a proxy server"**
+3. Address: `127.0.0.1` · Port: `8080`
+4. Click **Save**
+
+All browser traffic will now route through PyProxy.
+
+---
+
+## config.yaml Reference
 
 ```yaml
 server:
   host: "0.0.0.0"
-  port: 8080
+  port: 8080          # change port here
   workers: 50
 
 logging:
-  level: "INFO"           # DEBUG | INFO | WARNING | ERROR
-  log_file: "proxy.log"
-  max_bytes: 10485760     # 10 MB
+  level: "INFO"       # DEBUG | INFO | WARNING | ERROR
+  log_file: proxy.log
+  max_bytes: 10485760
   backup_count: 5
 
 cache:
   enabled: true
-  max_size: 256           # cached entries
-  ttl: 300                # seconds
+  max_size: 256
+  ttl: 300            # seconds
 
 bandwidth:
   enabled: true
-  default_kbps: 0         # 0 = unlimited
+  default_kbps: 0     # 0 = unlimited
   per_ip:
-    "192.168.1.50": 512   # throttle specific IP to 512 KB/s
+    "192.168.1.50": 512   # throttle one IP to 512 KB/s
 
 ip_filter:
-  mode: "none"            # none | allowlist | blocklist
-  list:
-    - "192.168.1.0/24"
+  mode: "none"        # none | allowlist | blocklist
+  list: []
 
 domain_filter:
-  mode: "none"            # none | allowlist | blocklist
+  mode: "none"        # none | allowlist | blocklist
   list:
     - "*.ads.com"
     - "tracker.net"
@@ -85,11 +106,14 @@ domain_filter:
 
 ---
 
-## CLI Overrides
+## Running from source (development)
 
-```bash
-python main.py --host 0.0.0.0 --port 9090 --workers 100 --log-level DEBUG
-python main.py --config /etc/pyproxy/config.yaml
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python tray_app.py       # tray mode
+python main.py           # CLI mode
 ```
 
 ---
@@ -98,34 +122,20 @@ python main.py --config /etc/pyproxy/config.yaml
 
 ```
 pyproxy/
-├── main.py                 # Entry point
-├── config.yaml             # Configuration file
+├── tray_app.py           ← tray GUI entry point
+├── main.py               ← CLI entry point
+├── build.bat             ← one-click Windows build script
+├── pyproxy.spec          ← PyInstaller spec
+├── config.yaml           ← default configuration
 ├── requirements.txt
 └── proxy/
-    ├── __init__.py
-    ├── config.py           # Config loader & dataclasses
-    ├── logger.py           # Rotating log + console setup
-    ├── filters.py          # IP and domain filtering
-    ├── cache.py            # LRU response cache
-    ├── bandwidth.py        # Token-bucket throttler
-    ├── http_parser.py      # HTTP/1.x request parser
-    ├── ftp_handler.py      # FTP-over-HTTP handler
-    ├── handler.py          # Per-connection dispatcher
-    └── server.py           # Thread-pool TCP server
+    ├── config.py         ← config loader
+    ├── logger.py         ← rotating log setup
+    ├── filters.py        ← IP & domain filtering
+    ├── cache.py          ← LRU response cache
+    ├── bandwidth.py      ← token-bucket throttler
+    ├── http_parser.py    ← HTTP/1.x parser
+    ├── ftp_handler.py    ← FTP-over-HTTP
+    ├── handler.py        ← per-connection dispatcher
+    └── server.py         ← thread-pool TCP server
 ```
-
----
-
-## Running Tests
-
-```bash
-pytest tests/ -v
-```
-
----
-
-## SOCKS5 Setup (Firefox example)
-
-1. **Options → General → Network Settings → Manual proxy**
-2. SOCKS Host: `127.0.0.1`  Port: `8080`
-3. Select **SOCKS v5**
