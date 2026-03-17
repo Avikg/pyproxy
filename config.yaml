@@ -1,34 +1,32 @@
 server:
   host: "0.0.0.0"
   port: 8080
-  workers: 50               # max concurrent threads
+  workers: 200              # large pool — tunnels now use separate threads
 
 logging:
-  level: "INFO"             # DEBUG | INFO | WARNING | ERROR
-  log_file: "proxy.log"
-  max_bytes: 10485760       # 10 MB per log file
+  level: "INFO"
+  log_file: proxy.log
+  max_bytes: 10485760
   backup_count: 5
 
 cache:
   enabled: true
-  max_size: 256             # number of cached responses
-  ttl: 300                  # seconds
+  max_size: 512
+  ttl: 300
 
 bandwidth:
   enabled: true
-  default_kbps: 0           # 0 = unlimited
-  per_ip:                   # per-IP override in kbps
-    # "192.168.1.50": 512
-    # "192.168.1.51": 1024
+  default_kbps: 0
+  per_ip: {}
 
 ip_filter:
-  mode: "none"              # none | allowlist | blocklist
-  list:
-    # - "192.168.1.100"
-    # - "10.0.0.0/24"
+  mode: "none"
+  list: []
 
+# Block IPv6 connectivity check hosts that always fail and cause delays
 domain_filter:
-  mode: "none"              # none | allowlist | blocklist
+  mode: "blocklist"
   list:
-    # - "ads.example.com"
-    # - "*.tracker.net"
+    - "ipv6.msftncsi.com"
+    - "ipv6.msftconnecttest.com"
+    - "teredo.ipv6.microsoft.com"

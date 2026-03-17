@@ -1,7 +1,7 @@
 ; PyProxy Inno Setup Script
 ; No exe launcher - uses VBScript to silently start pythonw
 
-#define AppName      "PyProxy"
+#define AppName      "Avik Proxy"
 #define AppVersion   "1.0.0"
 #define AppURL       "https://github.com"
 
@@ -16,7 +16,7 @@ DefaultDirName={localappdata}\{#AppName}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
 OutputDir=installer_output
-OutputBaseFilename=PyProxySetup
+OutputBaseFilename=AvikProxySetup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -24,6 +24,7 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 CloseApplications=yes
 RestartApplications=no
+SetupIconFile=avik_proxy.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -34,6 +35,8 @@ Name: "startupentry"; Description: "Start PyProxy when Windows starts"; GroupDes
 
 [Files]
 ; Main scripts
+Source: "avik_proxy.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "avik_proxy.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "tray_app.py";              DestDir: "{app}"; Flags: ignoreversion
 Source: "main.py";                  DestDir: "{app}"; Flags: ignoreversion
 Source: "config.yaml";              DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist
