@@ -1,15 +1,15 @@
-# PyProxy
+# Avik Proxy
 
-A CCProxy-style multi-protocol internet proxy server written in Python.
-Runs silently as a **system tray application** — no terminal, no console window.
-Distributable to any Windows machine via a standard installer.
+A CCProxy-equivalent multi-protocol internet proxy server written in Python.
+Runs silently as a **system tray application** with your custom **avik_proxy** icon.
+Distributable to any Windows machine via a standard installer — no antivirus issues.
 
 ---
 
 ## Table of Contents
 
 1. [Features](#features)
-2. [How It Works](#how-it-works)
+2. [Architecture](#architecture)
 3. [Project Structure](#project-structure)
 4. [Requirements](#requirements)
 5. [Running from Source](#running-from-source)
@@ -17,13 +17,15 @@ Distributable to any Windows machine via a standard installer.
 7. [Installing on Another Machine](#installing-on-another-machine)
 8. [Windows Proxy Setup](#windows-proxy-setup)
 9. [SOCKS5 Setup](#socks5-setup)
-10. [System Tray Usage](#system-tray-usage)
-11. [Configuration Reference](#configuration-reference)
-12. [CLI Reference](#cli-reference)
-13. [Blocking IPs and Domains](#blocking-ips-and-domains)
-14. [Viewing Logs](#viewing-logs)
-15. [Running Tests](#running-tests)
-16. [Troubleshooting](#troubleshooting)
+10. [TeamViewer Proxy Setup](#teamviewer-proxy-setup)
+11. [System Tray Usage](#system-tray-usage)
+12. [Configuration Reference](#configuration-reference)
+13. [CLI Reference](#cli-reference)
+14. [Blocking IPs and Domains](#blocking-ips-and-domains)
+15. [Viewing Logs](#viewing-logs)
+16. [Performance Notes](#performance-notes)
+17. [Running Tests](#running-tests)
+18. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -31,70 +33,87 @@ Distributable to any Windows machine via a standard installer.
 
 | Feature | Details |
 |---|---|
-| **HTTP proxy** | Full HTTP/1.x forwarding with URL rewriting |
-| **HTTPS proxy** | CONNECT tunnel — TLS handled end-to-end by client |
+| **HTTP proxy** | Full HTTP/1.x forwarding with URL rewriting and keep-alive |
+| **HTTPS proxy** | CONNECT tunnel — TLS handled end-to-end by the client |
 | **SOCKS5 proxy** | IPv4, IPv6, and domain name addressing |
 | **FTP-over-HTTP** | Translates `ftp://` requests into real FTP downloads |
+| **WebSocket support** | WS/WSS upgrades detected and tunnelled transparently |
 | **Web cache** | In-memory LRU cache for HTTP GET responses |
-| **IP filtering** | Allow or block client IPs by address or CIDR range |
+| **IP filtering** | Allow or block clients by IP address or CIDR range |
 | **Domain filtering** | Allow or block destinations by hostname or `*.wildcard` |
 | **Bandwidth control** | Per-IP token-bucket throttler (KB/s) |
-| **System tray** | Green/grey icon with live stats, no window needed |
+| **DNS cache** | Hostname resolved once per session — no repeated DNS lookups |
+| **TCP_NODELAY** | Nagle disabled on all sockets for minimum latency |
+| **Per-tunnel threads** | Every CONNECT gets its own thread — no worker starvation |
+| **System tray** | Custom avik_proxy icon, live stats, no console window |
 | **Rotating log** | Console + rotating file log |
-| **Installer** | Inno Setup `.exe` installer — no antivirus false positives |
+| **Inno Setup installer** | `AvikProxySetup.exe` — installs like normal software, no antivirus false positives |
 
 ---
 
-## How It Works
+## Architecture
 
 ```
 Client (browser / app)
         │
-        │  HTTP  HTTPS(CONNECT)  SOCKS5  FTP-over-HTTP
+        │  HTTP  HTTPS(CONNECT)  SOCKS5  FTP-over-HTTP  WebSocket
         ▼
-┌─────────────────────┐
-│  TCP Server         │  Listens on 0.0.0.0:8080
-│  (Thread Pool x50)  │
-└────────┬────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│  IP Filter          │  Block/allow by client IP or CIDR
-└────────┬────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│  Protocol Detect    │  SOCKS5 (0x05) vs HTTP/FTP
-└──────┬──────────────┘
+┌───────────────────────────────┐
+│  TCP Server  (port 8080)      │  Thread pool — 200 workers
+│  TCP_NODELAY + SO_REUSEADDR   │  DNS LRU cache (1024 entries)
+└──────────────┬────────────────┘  IPv4-preferred resolution
+               │
+               ▼
+┌───────────────────────────────┐
+│  IP Filter                    │  Allow/block by IP or CIDR
+└──────────────┬────────────────┘
+               │
+               ▼
+┌───────────────────────────────┐
+│  Protocol Detect              │  SOCKS5 (0x05) vs HTTP/FTP
+└──────┬────────────────────────┘
        │
-  ┌────┴──────────────────────────────┐
-  │                                   │
-  ▼                                   ▼
-SOCKS5 Handler                  HTTP Parser
-  │                                   │
-  │                         ┌─────────┴──────────┐
-  │                         │                    │
-  │                    Domain Filter        FTP-over-HTTP
-  │                         │
-  │                  ┌──────┴─────────┐
-  │                  │                │
-  │             Cache Lookup     CONNECT Tunnel
-  │                  │
-  ▼                  ▼
-┌──────────────────────────────┐
-│  Bandwidth Throttler         │  Token bucket per client IP
-└──────────────────────────────┘
-         │
-         ▼
-   Remote Server (internet)
+  ┌────┴─────────────────────────────────────────────┐
+  │                                                  │
+  ▼                                                  ▼
+SOCKS5 handler                              HTTP keep-alive loop
+  │                                           (max 50 req, 30s idle)
+  │                                                  │
+  │                              ┌───────────────────┼──────────────────┐
+  │                              │                   │                  │
+  │                         Domain filter       CONNECT             Plain HTTP
+  │                              │                   │                  │
+  │                              │            ┌──────▼──────┐    ┌──────▼──────┐
+  │                              │            │ Relay thread│    │ Cache lookup│
+  │                              │            │ (dedicated) │    │ + forward   │
+  │                              │            │ 5min idle   │    └─────────────┘
+  │                              │            └─────────────┘
+  │                              │
+  │                         WebSocket?
+  │                              │
+  │                         ┌────▼────────┐
+  │                         │ Relay thread│
+  │                         │ (dedicated) │
+  │                         └─────────────┘
+  │
+  ▼ (own relay thread)
+Remote server (internet)
 ```
+
+### Key design: per-tunnel threads
+
+Every `CONNECT` (HTTPS/WSS) and SOCKS5 connection spawns its own **dedicated relay thread**.
+The worker thread is freed immediately — it doesn't wait for the tunnel to close.
+This matches CCProxy's behaviour and prevents one long-lived connection
+(e.g. Outlook, Teams, Dropbox) from blocking all other requests.
 
 | Protocol | Behaviour |
 |---|---|
-| **HTTP** | Request forwarded; response cached for GET requests |
-| **HTTPS** | `CONNECT` tunnel opened; proxy relays raw bytes, TLS is client-side |
-| **SOCKS5** | Full RFC 1928 CONNECT; IPv4 / IPv6 / domain all supported |
-| **FTP-over-HTTP** | `GET ftp://host/path` → real FTP download → HTTP 200 response |
+| **HTTP** | Keep-alive loop — up to 50 requests per connection, 30s idle timeout |
+| **HTTPS** | CONNECT → relay thread spawned → worker freed immediately |
+| **WebSocket** | Upgrade forwarded → relay thread spawned → worker freed |
+| **SOCKS5** | Full RFC 1928; relay thread spawned after handshake |
+| **FTP-over-HTTP** | `GET ftp://host/path` → anonymous FTP download → HTTP 200 |
 
 ---
 
@@ -103,41 +122,45 @@ SOCKS5 Handler                  HTTP Parser
 ```
 pyproxy/
 │
-├── tray_app.py              System tray entry point (run this)
+├── tray_app.py              System tray entry point — run this
 ├── main.py                  CLI / headless entry point
+│
+├── avik_proxy.ico           Custom tray icon (multi-resolution .ico)
+├── avik_proxy.png           Custom tray icon (.png, used by tray at runtime)
 │
 ├── build_installer.bat      One-click installer build script
 ├── pyproxy_installer.iss    Inno Setup installer configuration
 ├── requirements.txt         All dependencies (dev + runtime)
-├── requirements_runtime.txt Runtime-only dependencies for installer
+├── requirements_runtime.txt Runtime-only dependencies (bundled in installer)
 │
-├── config.yaml              Configuration file (edit to change settings)
+├── config.yaml              Configuration file — edit to change settings
 │
 └── proxy/                   Core proxy package
     ├── __init__.py          Exports ProxyServer, load_config
-    ├── server.py            Thread-pool TCP server
-    ├── handler.py           Per-connection dispatcher
+    ├── server.py            Thread-pool TCP server + DNS LRU cache
+    ├── handler.py           Per-connection dispatcher (per-tunnel threads)
     ├── http_parser.py       HTTP/1.x request parser
     ├── ftp_handler.py       FTP-over-HTTP translator
     ├── filters.py           IP and domain allow/blocklist
     ├── cache.py             Thread-safe LRU response cache
     ├── bandwidth.py         Token-bucket bandwidth throttler
-    ├── stats.py             Live metrics collector
+    ├── stats.py             Live metrics collector (singleton)
     ├── config.py            Config dataclasses and YAML loader
-    └── logger.py            Rotating log setup
+    └── logger.py            Console + rotating file log setup
 ```
 
 ---
 
 ## Requirements
 
-### On your development / build machine
+### Build machine (your machine)
 - Python **3.10 or newer** — https://python.org/downloads
-- Inno Setup 6 (for building the installer) — https://jrsoftware.org/isdl.php
+- Inno Setup 6 — https://jrsoftware.org/isdl.php
 - Windows 10 / 11
 
-### On the target machine (where proxy will run)
+### Target machine (where proxy runs)
 - Python **3.10 or newer** — https://python.org/downloads
+  - During install: tick **"Add Python to PATH"**
 - Windows 10 / 11
 - No VS Code, no terminal, no other tools needed
 
@@ -145,17 +168,20 @@ pyproxy/
 
 ## Running from Source
 
-Use this during development — changes take effect immediately, no rebuild needed.
+Use this during development — no rebuild needed after code changes.
 
-### Step 1 — Clone or download the project
+### Step 1 — Clone / download
 
 ```
 C:\Development\pyproxy\
 ├── tray_app.py
 ├── main.py
 ├── config.yaml
+├── avik_proxy.ico
+├── avik_proxy.png
 ├── requirements.txt
 └── proxy\
+    └── (all .py files)
 ```
 
 ### Step 2 — Create virtual environment
@@ -165,7 +191,7 @@ cd C:\Development\pyproxy
 python -m venv .venv
 ```
 
-### Step 3 — Activate virtual environment
+### Step 3 — Activate
 
 ```powershell
 # PowerShell
@@ -184,147 +210,234 @@ pip install -r requirements.txt
 ### Step 5 — Run
 
 ```powershell
-# Tray mode (recommended — runs silently in system tray)
+# Tray mode — silently runs in system tray with custom icon
 python tray_app.py
 
-# CLI / headless mode (shows logs in terminal)
+# CLI / headless — logs printed to terminal
 python main.py
 ```
 
-A **green P icon** appears in the system tray (bottom-right taskbar).
-Right-click it to control the proxy.
+The **avik_proxy icon** appears in the system tray (bottom-right taskbar).
+Right-click for controls.
 
 ---
 
 ## Building the Installer
 
-This produces `PyProxySetup.exe` — a standard Windows installer you can
-send to any machine. It does **not** use PyInstaller, so antivirus will
-never flag it.
+Produces `AvikProxySetup.exe` — a standard Windows installer that won't trigger antivirus.
 
-### Prerequisites
+---
 
-1. Install **Inno Setup 6** from https://jrsoftware.org/isdl.php
-2. Make sure Python and your `.venv` are set up (see above)
+### Step 1 — Install Inno Setup (one-time, free)
 
-### Build
+1. Go to **https://jrsoftware.org/isdl.php**
+2. Click **"Download Inno Setup 6"**
+3. Run the downloaded `isetup-6.x.x.exe`
+4. Click Next → Next → Install
+5. Default install path: `C:\Program Files (x86)\Inno Setup 6\`
+
+---
+
+### Step 2 — Set up virtual environment (if not done)
+
+```powershell
+cd C:\Development\pyproxy
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+---
+
+### Step 3 — Run the build script
 
 ```powershell
 cd C:\Development\pyproxy
 .\build_installer.bat
 ```
 
-The script automatically:
-1. Activates the virtual environment
-2. Installs/updates dependencies
-3. Runs Inno Setup compiler
-4. Outputs `installer_output\PyProxySetup.exe`
+> **Note:** Always use `.\` prefix in PowerShell to run local scripts.
+
+**What the build script does automatically:**
+
+```
+[1/3] Activates .venv
+      Runs: pip install PyYAML pystray Pillow --quiet
+
+[2/3] Runs Inno Setup compiler
+      Command: ISCC.exe pyproxy_installer.iss
+
+[3/3] Done — installer written to installer_output\AvikProxySetup.exe
+```
+
+---
+
+### Step 4 — Find your installer
+
+```
+C:\Development\pyproxy\
+└── installer_output\
+    └── AvikProxySetup.exe    ← this is your distributable file
+```
+
+Send this single file to any Windows machine that has Python installed.
+
+---
+
+### Rebuild after code changes
+
+Any time you edit a `.py` file, rebuild to get a fresh installer:
+
+```powershell
+# Kill any running instance first
+taskkill /f /im pythonw.exe 2>$null
+
+# Rebuild
+cd C:\Development\pyproxy
+.\build_installer.bat
+```
+
+---
+
+### Manual build (step by step)
+
+If `build_installer.bat` fails, you can run each step manually:
+
+```powershell
+# 1. Activate venv
+cd C:\Development\pyproxy
+.venv\Scripts\Activate.ps1
+
+# 2. Install dependencies
+pip install PyYAML pystray Pillow pyinstaller
+
+# 3. Run Inno Setup compiler directly
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" pyproxy_installer.iss
+
+# 4. Check output
+dir installer_output\
+```
+
+---
+
+### Build troubleshooting
+
+| Error | Fix |
+|---|---|
+| `'build.bat' is not recognized` | Use `.\build_installer.bat` not `build_installer.bat` |
+| `Inno Setup not found` | Install from https://jrsoftware.org/isdl.php |
+| `PermissionError: Access is denied` | Run `taskkill /f /im pythonw.exe` first, then rebuild |
+| `McAfee blocked AvikProxySetup.exe` | Open McAfee → Antivirus → Review threats → Restore |
+| `Python not found` | Install Python from https://python.org, tick "Add to PATH" |
+| `pip install failed` | Run `python -m pip install --upgrade pip` then retry |
+
+---
 
 ### Output
 
 ```
 installer_output\
-└── PyProxySetup.exe    ← send this file to the target machine
+└── AvikProxySetup.exe    ← send this to any target machine
 ```
 
 ---
 
 ## Installing on Another Machine
 
-### Requirements on target machine
-- Windows 10 or 11
-- Python 3.10+ installed from https://python.org/downloads
-  - During Python install, tick **"Add Python to PATH"**
+### Prerequisites on target machine
+- Windows 10 / 11
+- Python 3.10+ from https://python.org/downloads
+  - Tick **"Add Python to PATH"** during installation
 
-### Installation steps
+### Steps
 
-1. Copy `PyProxySetup.exe` to the target machine (USB, email, Google Drive, etc.)
-2. Double-click `PyProxySetup.exe`
-3. The installer wizard opens:
+1. Copy `AvikProxySetup.exe` to target machine
+2. Double-click it — a setup wizard opens:
 
 ```
-[Welcome]
-  → Click Next
+Welcome                 → Next
+Select Destination      → Default: C:\Users\<you>\AppData\Local\Avik Proxy
+                          → Next
+Additional Tasks
+  ☐ Create desktop shortcut          (optional)
+  ☐ Start Avik Proxy when Windows starts  (optional — recommended for LAN proxy)
+                        → Next
+Ready to Install        → Install
 
-[Select Destination]
-  → Default: C:\Users\<you>\AppData\Local\PyProxy
-  → Click Next
+Installing…
+  Copies all .py files
+  Installs: pip install pystray Pillow PyYAML  (silently)
+  Creates start.vbs launcher
 
-[Select Additional Tasks]
-  ☐ Create a desktop shortcut    (optional)
-  ☐ Start PyProxy when Windows starts  (optional — recommended)
-  → Click Next
-
-[Ready to Install]
-  → Click Install
-
-[Installing...]
-  → Automatically runs: pip install pystray Pillow PyYAML
-
-[Finish]
-  ☑ Launch PyProxy now
-  → Click Finish
+Finish
+  ☑ Launch Avik Proxy now  → Finish
 ```
 
-4. A **green P icon** appears in the system tray — proxy is running.
+3. Avik proxy icon appears in system tray — proxy is running.
 
 ### What gets installed
 
 ```
-C:\Users\<you>\AppData\Local\PyProxy\
-├── tray_app.py          Main script
-├── main.py              CLI script
-├── start.vbs            Silent launcher (used by shortcuts)
-├── config.yaml          Configuration (edit this to change settings)
-├── requirements_runtime.txt
-└── proxy\               Core proxy package
+C:\Users\<you>\AppData\Local\Avik Proxy\
+├── tray_app.py              Main script
+├── main.py                  CLI script
+├── start.vbs                Silent launcher (used by shortcuts)
+├── avik_proxy.ico           Tray icon
+├── avik_proxy.png           Tray icon (PNG)
+├── config.yaml              Configuration (safe to edit)
+└── proxy\                   Core proxy package
     └── (all .py files)
 ```
 
-Start Menu entries:
-- **PyProxy** — starts the proxy
-- **Uninstall PyProxy** — removes everything
+Start Menu:
+- **Avik Proxy** — starts the proxy
+- **Uninstall Avik Proxy** — removes everything
 
-### Uninstalling
+### Uninstall
 
-- **Settings → Apps → PyProxy → Uninstall**
-- or: **Start Menu → PyProxy → Uninstall PyProxy**
+- **Settings → Apps → Avik Proxy → Uninstall**
+- or: **Start Menu → Avik Proxy → Uninstall Avik Proxy**
+
+### Why no antivirus issues
+
+The installer uses `wscript.exe` (a trusted Windows system binary) to launch
+`tray_app.py` — no PyInstaller-bundled exe, no self-extracting packer.
+Antivirus tools never flag `.py` scripts or `wscript.exe`.
 
 ---
 
 ## Windows Proxy Setup
 
-After PyProxy is running, configure Windows to use it:
+Configure Windows to route all traffic through Avik Proxy:
 
-1. Open **Settings → Network & Internet → Proxy**
-2. Under *Manual proxy setup* click **Set up**
+1. **Settings → Network & Internet → Proxy**
+2. Under *Manual proxy setup*, click **Set up**
 3. Toggle **"Use a proxy server"** → **On**
 4. Address: `127.0.0.1`
 5. Port: `8080`
 6. Click **Save**
 
-All HTTP and HTTPS traffic from browsers and most Windows apps will
-now route through PyProxy.
+All HTTP and HTTPS traffic from browsers (Chrome, Edge, Firefox) and most
+Windows apps will now route through the proxy.
 
-To verify: right-click the tray icon — it should show
-`● Running  127.0.0.1:8080` and the request count should increase as
-you browse.
+To verify: right-click tray icon — status should show `● Running  127.0.0.1:8080`
+and request count increases as you browse.
 
 ---
 
 ## SOCKS5 Setup
 
-SOCKS5 runs on the **same port** as HTTP (8080 by default).
+SOCKS5 runs on the **same port** (8080 by default).
 
 ### Firefox
 
 1. **Options → General → Network Settings → Manual proxy configuration**
-2. SOCKS Host: `127.0.0.1`   Port: `8080`
+2. SOCKS Host: `127.0.0.1`  Port: `8080`
 3. Select **SOCKS v5**
 4. Check **"Proxy DNS when using SOCKS v5"**
 5. Click **OK**
 
-### Chrome / Edge (via command line)
+### Chrome / Edge
 
 ```powershell
 chrome.exe --proxy-server="socks5://127.0.0.1:8080"
@@ -344,76 +457,99 @@ python -c "import urllib.request; h=urllib.request.ProxyHandler({'http':'http://
 
 ---
 
+## TeamViewer Proxy Setup
+
+TeamViewer ignores the Windows system proxy — it must be configured inside the app.
+
+1. Open TeamViewer
+2. **Extras → Options → General → Network settings**
+3. Under **Proxy settings**, select **"Use manual proxy"**
+4. Host: `127.0.0.1`   Port: `8080`
+5. Click **OK**
+
+Other apps that need manual proxy configuration:
+
+| App | Where to configure |
+|---|---|
+| TeamViewer | Extras → Options → Network |
+| Zoom | Settings → General → Network Proxy |
+| Slack | File → Preferences → Advanced → Network |
+| VS Code | Settings → search "proxy" |
+| Firefox | Options → Network Settings |
+| Chrome/Edge | Uses Windows system proxy automatically |
+
+---
+
 ## System Tray Usage
 
-PyProxy lives in the **system tray** (bottom-right corner of taskbar).
-If you don't see it, click the **`^`** arrow to show hidden icons.
+The **avik_proxy icon** lives in the system tray (bottom-right of taskbar).
+If not visible, click **`^`** to show hidden icons.
 
-### Icon colours
+### Icon states
 
 | Icon | Meaning |
 |---|---|
-| 🟢 Green circle with P | Proxy is running |
-| ⚫ Grey circle with P | Proxy is stopped |
+| Full colour (purple/green) | Proxy is running |
+| Greyscale | Proxy is stopped |
 
 ### Right-click menu
 
 ```
+Avik Proxy
 ● Running  127.0.0.1:8080          ← status (not clickable)
-Reqs: 42  Blocked: 1  Uptime: 5m   ← live stats (updates every 5s)
-─────────────────────────────
+Reqs: 142  Blocked: 3  Uptime: 8m  ← live stats (updates every 5s)
+───────────────────────────────────
 Start                               ← greyed out when running
 Stop
 Restart
-─────────────────────────────
+───────────────────────────────────
 View Log                            ← opens proxy.log in Notepad
 Open Config                         ← opens config.yaml in Notepad
-─────────────────────────────
+───────────────────────────────────
 Quit                                ← stops proxy and exits tray
 ```
 
 ### Applying config changes
 
-1. Right-click tray → **Open Config**
-2. Edit `config.yaml` and save
-3. Right-click tray → **Restart**
-
-Changes take effect immediately after restart.
+1. Right-click → **Open Config**
+2. Edit and save `config.yaml`
+3. Right-click → **Restart**
 
 ---
 
 ## Configuration Reference
 
-`config.yaml` lives next to the installed scripts.
+`config.yaml` is next to the installed scripts.
 All changes require a **Restart** to take effect.
 
 ```yaml
 # ── Server ────────────────────────────────────────────────────────────────────
 server:
   host: "0.0.0.0"       # Bind address. Use 127.0.0.1 for localhost only.
-  port: 8080            # Port for HTTP, HTTPS, SOCKS5 and FTP-over-HTTP.
-  workers: 50           # Max simultaneous connections (thread pool size).
+  port: 8080            # Port for HTTP, HTTPS, SOCKS5, FTP, WebSocket.
+  workers: 200          # Thread pool size for accepting new connections.
+                        # Tunnels use their own threads — this can be lower.
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging:
   level: "INFO"         # DEBUG | INFO | WARNING | ERROR
-  log_file: proxy.log   # Log file path (relative = next to config.yaml).
-  max_bytes: 10485760   # Max size per log file: 10 MB.
-  backup_count: 5       # Number of rotated log files to keep.
+  log_file: proxy.log   # Relative = next to config.yaml
+  max_bytes: 10485760   # Max size per log file (10 MB)
+  backup_count: 5       # Number of old log files to keep
 
 # ── Web Cache ─────────────────────────────────────────────────────────────────
 cache:
-  enabled: true         # Set false to disable caching entirely.
-  max_size: 256         # Max number of responses stored in memory.
-  ttl: 300              # Seconds before a cached response expires.
+  enabled: true         # false = disable caching entirely
+  max_size: 512         # Max number of cached responses (in memory)
+  ttl: 300              # Seconds before a cached response expires
 
 # ── Bandwidth Control ─────────────────────────────────────────────────────────
 bandwidth:
-  enabled: true         # Set false to disable throttling entirely.
-  default_kbps: 0       # Speed cap for all clients. 0 = unlimited.
-  per_ip:               # Per-client overrides (KB/s).
-    "192.168.1.50": 512
-    "192.168.1.51": 1024
+  enabled: true         # false = disable throttling entirely
+  default_kbps: 0       # Default cap for all clients. 0 = unlimited.
+  per_ip:               # Per-client overrides
+    "192.168.1.50": 512   # Limit this IP to 512 KB/s
+    "192.168.1.51": 1024  # Limit this IP to 1024 KB/s
 
 # ── IP Filter ─────────────────────────────────────────────────────────────────
 ip_filter:
@@ -424,25 +560,29 @@ ip_filter:
 
 # ── Domain Filter ─────────────────────────────────────────────────────────────
 domain_filter:
-  mode: "none"          # none | allowlist | blocklist
+  mode: "blocklist"     # none | allowlist | blocklist
   list:
-    - "ads.example.com"
-    - "*.tracker.net"   # wildcard — matches any subdomain
+    # Windows IPv6 connectivity checks — always fail, cause slowness
+    - "ipv6.msftncsi.com"
+    - "ipv6.msftconnecttest.com"
+    - "teredo.ipv6.microsoft.com"
+    # Add your own blocked domains below:
+    # - "ads.example.com"
+    # - "*.tracker.net"
 ```
 
-### Important rules
+### Critical rules
 
-- **Always use `list: []`** for empty lists — never leave it blank or commented,
-  this causes a startup crash.
-- **Always use `per_ip: {}`** for empty bandwidth rules.
-- CIDR notation (`10.0.0.0/8`, `192.168.0.0/24`) is supported in `ip_filter`.
-- Wildcards (`*.ads.com`) match subdomains but NOT the bare domain `ads.com`.
+- **`list: []`** — always use an explicit empty list when empty. Commented-out entries leave the field as `null` and cause a startup crash.
+- **`per_ip: {}`** — always use explicit empty map `{}` when no per-IP rules are set.
+- CIDR notation is supported: `10.0.0.0/8`, `192.168.0.0/24`
+- Wildcards like `*.ads.com` match subdomains but NOT the bare domain `ads.com`
 
 ---
 
 ## CLI Reference
 
-`main.py` provides headless mode — logs print to the terminal.
+`main.py` provides headless mode — all output goes to the terminal.
 All flags override `config.yaml`.
 
 ```powershell
@@ -460,13 +600,13 @@ python main.py [OPTIONS]
 ### Examples
 
 ```powershell
-# Start with defaults
+# Start with defaults from config.yaml
 python main.py
 
 # Debug mode on a custom port
 python main.py --port 9090 --log-level DEBUG
 
-# Localhost only
+# Localhost only (won't accept LAN clients)
 python main.py --host 127.0.0.1
 
 # Custom config file
@@ -477,38 +617,38 @@ python main.py --config C:\Users\me\myproxy.yaml
 
 ## Blocking IPs and Domains
 
-### Block a specific IP
+Edit `config.yaml`, save, then right-click tray → **Restart**.
 
-Edit `config.yaml`:
+### Block specific IPs
+
 ```yaml
 ip_filter:
   mode: "blocklist"
   list:
     - "192.168.1.55"
+    - "192.168.1.80"
 ```
-Save → Restart proxy.
 
-### Block an IP range (CIDR)
+### Block an entire IP range (CIDR)
 
 ```yaml
 ip_filter:
   mode: "blocklist"
   list:
     - "10.0.0.0/8"
-    - "192.168.1.0/24"
+    - "172.16.0.0/12"
 ```
 
-### Allow only specific IPs (whitelist mode)
+### Allow only specific IPs (LAN whitelist)
 
 ```yaml
 ip_filter:
   mode: "allowlist"
   list:
-    - "192.168.1.10"
-    - "192.168.1.11"
+    - "192.168.0.0/24"   # your whole LAN subnet
 ```
 
-### Block a website / domain
+### Block websites / domains
 
 ```yaml
 domain_filter:
@@ -516,6 +656,7 @@ domain_filter:
   list:
     - "ads.example.com"
     - "*.doubleclick.net"
+    - "*.googlesyndication.com"
     - "malware.com"
 ```
 
@@ -528,20 +669,16 @@ domain_filter:
     - "google.com"
     - "*.google.com"
     - "github.com"
+    - "*.github.com"
 ```
 
-### Apply changes
-
-Right-click tray icon → **Restart**
-
-Blocked requests show `BLOCKED` status in the log with HTTP 403 response
-to the client.
+Blocked requests get an immediate HTTP 403 and are logged as `BLOCKED`.
 
 ---
 
 ## Viewing Logs
 
-### From the tray
+### From tray
 
 Right-click tray icon → **View Log** — opens `proxy.log` in Notepad.
 
@@ -550,26 +687,55 @@ Right-click tray icon → **View Log** — opens `proxy.log` in Notepad.
 | Mode | Location |
 |---|---|
 | Running from source | `C:\Development\pyproxy\proxy.log` |
-| Installed via installer | `C:\Users\<you>\AppData\Local\PyProxy\proxy.log` |
+| Installed | `C:\Users\<you>\AppData\Local\Avik Proxy\proxy.log` |
 
 ### Log format
 
 ```
-2026-03-16 08:31:01 [INFO]  worker-3 – HTTP GET example.com:80/index.html [192.168.1.5]
-2026-03-16 08:31:02 [INFO]  worker-1 – CONNECT tunnel google.com:443 [192.168.1.5]
-2026-03-16 08:31:03 [WARNING] worker-2 – Blocked domain: ads.tracker.net [192.168.1.5]
+2026-03-17 20:02:47 [INFO]    worker_5  – CONNECT tunnel d.dropbox.com:443 [192.168.0.199]
+2026-03-17 20:02:47 [INFO]    worker_28 – HTTP GET msedge.b.tlu.dl.delivery.mp.microsoft.com:80/... [192.168.0.199]
+2026-03-17 20:02:49 [ERROR]   worker_41 – Cannot reach ipv6.msftncsi.com:80 – getaddrinfo failed
+2026-03-17 20:02:49 [WARNING] worker_2  – Blocked domain: ads.tracker.net [192.168.0.199]
 ```
 
 ### Log levels
 
-| Level | What you see |
+| Level | Shows |
 |---|---|
-| `ERROR` | Only failures and crashes |
+| `ERROR` | Failures and crashes only |
 | `WARNING` | Failures + blocked requests |
-| `INFO` | Every request (default) |
-| `DEBUG` | Every request + cache hits + connection details |
+| `INFO` | Every request (default — recommended) |
+| `DEBUG` | Everything including cache hits, DNS, headers |
 
-Change level in `config.yaml` under `logging.level`, then Restart.
+---
+
+## Performance Notes
+
+### Why it's fast
+
+- **DNS LRU cache** — every hostname resolved once and cached for the session. No repeated DNS lookups per request.
+- **IPv4-preferred DNS** — `AF_INET` used first, avoiding IPv6 timeout delays on networks without IPv6 routing.
+- **Per-tunnel threads** — every CONNECT spawns its own relay thread. One long-lived connection (Outlook staying open for hours) never delays a browser request.
+- **TCP_NODELAY** — Nagle's algorithm disabled on all sockets. Small packets sent immediately.
+- **IPv6 connectivity hosts short-circuited** — `ipv6.msftncsi.com` and similar Windows diagnostic hosts that always fail DNS are rejected instantly in code (before DNS lookup), saving 10s per attempt.
+- **HTTP keep-alive** — up to 50 requests reuse the same TCP connection.
+
+### Tuning for large LANs
+
+If you have many users (20+), increase workers in `config.yaml`:
+
+```yaml
+server:
+  workers: 500
+```
+
+Workers only consume memory when active. Setting it high is safe — idle workers cost almost nothing.
+
+### Windows Widgets / sidebar loading slowly
+
+This is caused by Windows making WebSocket connections that our proxy now handles correctly. If it still loads slowly:
+1. Make sure `handler.py` is the latest version (with per-tunnel threads)
+2. Add the domain to bypass if needed — set Windows proxy exception for `*.microsoft.com`
 
 ---
 
@@ -583,8 +749,7 @@ pytest tests/ -v
 
 Expected: **25 passed**
 
-Tests cover: IP filter, domain filter, LRU cache, token-bucket bandwidth
-throttler, and HTTP/1.x request parser.
+Covers: IP filter, domain filter, LRU cache, token-bucket bandwidth throttler, HTTP/1.x parser.
 
 ---
 
@@ -592,87 +757,158 @@ throttler, and HTTP/1.x request parser.
 
 ### Proxy icon doesn't appear in tray
 
-- Make sure the script is actually running — open Task Manager and look
-  for `pythonw.exe`
-- Check the hidden icons area: click **`^`** in the taskbar
-- Run from terminal to see errors:
-  ```powershell
-  python tray_app.py
-  ```
+```powershell
+# Run from terminal to see errors
+python tray_app.py
+```
 
-### Proxy shows "Stopped" / won't start
+Check hidden icons — click **`^`** in the taskbar corner.
 
-Check `proxy.log` for errors. Common causes:
+---
 
-- **Port already in use** — change `port` in `config.yaml` to `8888` or any free port,
-  then update Windows proxy settings to match
-- **config.yaml has null lists** — replace commented list entries:
-  ```yaml
-  # WRONG (causes crash)
-  ip_filter:
-    mode: "none"
-    list:
-      # - "192.168.1.100"
+### Proxy stuck on "Stopped" / won't start
 
-  # CORRECT
-  ip_filter:
-    mode: "none"
-    list: []
-  ```
+Check `proxy.log` for errors. Most common causes:
+
+**Port already in use:**
+```powershell
+netstat -ano | findstr :8080
+```
+If occupied, change `port` in `config.yaml` and update Windows proxy settings to match.
+
+**config.yaml has null lists (startup crash):**
+```yaml
+# WRONG — commented entries leave field as null
+ip_filter:
+  mode: "none"
+  list:
+    # - "192.168.1.100"
+
+# CORRECT
+ip_filter:
+  mode: "none"
+  list: []
+
+# WRONG
+bandwidth:
+  per_ip:
+    # "192.168.1.50": 512
+
+# CORRECT
+bandwidth:
+  per_ip: {}
+```
+
+---
 
 ### Browser can't connect through proxy
 
-1. Confirm proxy is running (green icon in tray)
+1. Confirm proxy is running (coloured icon in tray)
 2. Confirm Windows proxy settings: `127.0.0.1` port `8080`
 3. Test directly:
-   ```powershell
-   python -c "import urllib.request; h=urllib.request.ProxyHandler({'http':'http://127.0.0.1:8080'}); o=urllib.request.build_opener(h); print(o.open('http://example.com').read(100))"
-   ```
-4. Check port is listening:
-   ```powershell
-   netstat -ano | findstr :8080
-   ```
-   You should see `LISTENING`. If not, the proxy crashed — check the log.
-
-### McAfee blocks PyProxy.exe
-
-The installer no longer uses `PyProxy.exe` — it uses `wscript.exe` (a
-trusted Windows system binary) to launch `tray_app.py`. If McAfee still
-complains, run directly from source:
-```powershell
-python tray_app.py
-```
-Python scripts are never flagged by antivirus.
-
-### PowerShell `curl` doesn't work
-
-PowerShell's `curl` is an alias for `Invoke-WebRequest`, not real curl.
 
 ```powershell
-# Use this instead
-Invoke-WebRequest -Uri http://example.com -Proxy http://127.0.0.1:8080
-
-# Or use Python
 python -c "import urllib.request; h=urllib.request.ProxyHandler({'http':'http://127.0.0.1:8080'}); o=urllib.request.build_opener(h); print(o.open('http://example.com').read(100))"
 ```
 
-### build_installer.bat fails — Inno Setup not found
-
-Make sure Inno Setup 6 is installed:
-- Download: https://jrsoftware.org/isdl.php
-- Default install path: `C:\Program Files (x86)\Inno Setup 6\`
-
-### PermissionError when building — PyProxy.exe is running
+4. Check port is listening:
 
 ```powershell
-taskkill /f /im PyProxy.exe
-taskkill /f /im pythonw.exe
+netstat -ano | findstr :8080
+```
+
+You should see `LISTENING`. If not, the proxy crashed — check the log.
+
+---
+
+### Pages loading slowly
+
+Check `proxy.log` for repeated `getaddrinfo failed` errors on IPv6 hosts.
+If you see `ipv6.msftncsi.com` errors, make sure your `config.yaml` has
+the blocklist entries:
+
+```yaml
+domain_filter:
+  mode: "blocklist"
+  list:
+    - "ipv6.msftncsi.com"
+    - "ipv6.msftconnecttest.com"
+    - "teredo.ipv6.microsoft.com"
+```
+
+Also ensure you have the latest `handler.py` with per-tunnel threads.
+
+---
+
+### Windows Widgets / sidebar not loading
+
+This requires WebSocket support. Make sure `proxy\handler.py` is the latest
+version. The current handler detects WebSocket upgrades and spawns dedicated
+relay threads for them.
+
+If still failing, add a proxy exception in Windows:
+**Settings → Network & Internet → Proxy → Set up → Exceptions:**
+```
+*.microsoft.com;*.msn.com;*.live.com
+```
+
+---
+
+### McAfee blocking the installer or scripts
+
+The installer uses `wscript.exe` (a trusted Windows system binary) to launch
+`tray_app.py`. Python `.py` scripts are never flagged by antivirus.
+
+If McAfee quarantines something:
+1. Open McAfee → Antivirus → Review threats
+2. Click **Restore** on the quarantined item
+3. Click **Trust this file**
+
+Or run directly from source — never gets flagged:
+```powershell
+python tray_app.py
+```
+
+---
+
+### `taskkill /f /im PyProxy.exe` needed before rebuild
+
+```powershell
+taskkill /f /im PyProxy.exe 2>$null
+taskkill /f /im pythonw.exe 2>$null
 .\build_installer.bat
 ```
 
+---
+
+### PowerShell `curl` doesn't work
+
+PowerShell's `curl` is an alias for `Invoke-WebRequest`. Use:
+
+```powershell
+# PowerShell native
+Invoke-WebRequest -Uri http://example.com -Proxy http://127.0.0.1:8080
+
+# Real curl (if installed)
+curl.exe -x http://127.0.0.1:8080 http://example.com
+
+# Python test
+python -c "import urllib.request; h=urllib.request.ProxyHandler({'http':'http://127.0.0.1:8080'}); o=urllib.request.build_opener(h); print(o.open('http://example.com').read(100))"
+```
+
+---
+
 ### `ImportError: cannot import name 'ProxyServer' from 'proxy'`
 
-`proxy\__init__.py` is missing. Create it:
+`proxy\__init__.py` is missing. Recreate it:
+
 ```powershell
 Set-Content proxy\__init__.py "from .config import load_config`nfrom .server import ProxyServer`n`n__all__ = ['load_config', 'ProxyServer']"
 ```
+
+---
+
+### build_installer.bat fails — Inno Setup not found
+
+Install from: https://jrsoftware.org/isdl.php
+Default path: `C:\Program Files (x86)\Inno Setup 6\`
